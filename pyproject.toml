@@ -1,0 +1,33 @@
+[project]
+name = "nsd-ieeg-share"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate>=1.10.1",
+    "clip",
+    "diffusers>=0.35.1",
+    "imageio==2.34.0",
+    "matplotlib>=3.10.7",
+    "numpy>=2.2.6",
+    "omegaconf==2.3.0",
+    "open-clip-torch==2.26.1",
+    "pandas==2.2.3",
+    "pillow>=11.3.0",
+    "pyarrow>=21.0.0",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    "tqdm>=4.67.1",
+    "transformers>=4.57.0",
+]
+
+[tool.uv.sources]
+clip = { git = "https://github.com/openai/CLIP.git" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.1",
+]
