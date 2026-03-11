@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
     """
-    Align neural data across runs with potentially different channels.
+    Align neural data across runs with potentially different channels. Inserts NaNs for missing data.
     
     Parameters
     ----------
@@ -28,6 +28,7 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
     if len(set(time_dims)) > 1:
         raise ValueError(f"Time dimension varies across runs: {time_dims}")
     n_time = time_dims[0]
+    total_trials = sum(arr.shape[0] for arr in all_data)
     
     # Get all unique channel names across all runs (excluding specified channels)
     all_channel_names = []
@@ -43,9 +44,12 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
     # Map channel_name to position in aligned array
     channel_name_to_pos = {ch: i for i, ch in enumerate(unique_channels)}
     
-    aligned_runs = []
+    # Pre-allocate final array as float32 to save memory
+    data = np.full((total_trials, n_channels, n_time), np.nan, dtype=np.float32)
+    
+    current_trial_idx = 0
     for run_idx, (data_array, label_df) in enumerate(tqdm(zip(all_data, all_labels), total=len(all_data), desc="Aligning runs")):
-        n_trials, n_ch, _ = data_array.shape
+        n_trials_run, n_ch, _ = data_array.shape
 
         duplicates = label_df['channel_name'].duplicated()
         if duplicates.any():
@@ -55,23 +59,17 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
         assert n_ch == len(label_df), \
             f"Data channels ({n_ch}) do not match label rows ({len(label_df)}) for run {run_idx}"
         
-        # Filter out excluded channels
+        # Filter out excluded channels and cast to float32
         mask = ~label_df['channel_name'].isin(exclude_channels)
         filtered_labels = label_df[mask].reset_index(drop=True)
-        filtered_data = data_array[:, mask.values, :]
+        filtered_data = data_array[:, mask.values, :].astype(np.float32)
         
-        # Create aligned array for this run (trials x unique channels x time)
-        aligned_data = np.full((n_trials, n_channels, n_time), np.nan)
-        
-        # Map run-specific label into global label order using "channel_name_to_pos"
+        # Map run-specific label into global label order directly in pre-allocated array
         for local_ch_idx, row in filtered_labels.iterrows():
             global_pos = channel_name_to_pos[row['channel_name']]
-            aligned_data[:, global_pos, :] = filtered_data[:, local_ch_idx, :]
+            data[current_trial_idx : current_trial_idx + n_trials_run, global_pos, :] = filtered_data[:, local_ch_idx, :]
         
-        aligned_runs.append(aligned_data)
-    
-    # Concatenate all runs along trial dimension
-    data = np.vstack(aligned_runs)
+        current_trial_idx += n_trials_run
 
     channels_with_missing = []
     for ch_idx, ch_name in enumerate(unique_channels):
@@ -79,7 +77,7 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
             channels_with_missing.append(ch_name)
     
     if channels_with_missing:
-        print(f"\nChannels with missing data (not present in all runs): {channels_with_missing}")
+        print(f"\nChannels with missing data (not present in all runs): {channels_with_missing}\nInserted NaNs for missing data.")
     
     # Create aligned channel info dataframe
     labels_concat = pd.concat(all_labels, ignore_index=True)
@@ -89,12 +87,10 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
     # Sort to match the data array's channel order (sorted by channel_name)
     channel_info = (channel_info
                     .set_index('channel_name')
-                    .loc[unique_channels]  # Reindex to match unique_channels order
+                    .loc[unique_channels]
                     .reset_index())
 
     return data, channel_info
-
-
 # NCSNR helper functions
 def compute_noise_ceiling(data_in):
     """
@@ -178,7 +174,7 @@ def compute_ncsnr_all_timepoints(data_4d, times):
     return ncsnr_results, nc_results
 
 
-def ncsnr_figs(ncsnr_all, nc_all, times):
+def ncsnr_figs(ncsnr_all, nc_all, times, save_path=None):
 
     print(f"NCSNR results shape: {ncsnr_all.shape}") 
     print(f"NC results shape: {nc_all.shape}")      
@@ -224,6 +220,8 @@ def ncsnr_figs(ncsnr_all, nc_all, times):
     axes[1, 1].grid(True, alpha=0.3)
 
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path)
     plt.show()
 
     # Print summary statistics
