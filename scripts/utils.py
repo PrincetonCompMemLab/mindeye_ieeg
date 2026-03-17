@@ -1,7 +1,9 @@
-import numpy as np 
+import sys
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+
 
 def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
     """
