@@ -11,6 +11,7 @@ import numpy as np
 import scipy
 import pandas as pd
 from scipy.stats import pearsonr, zscore
+import statsmodels
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -178,8 +179,7 @@ else:
 
 
 if load_from_file is False:
-    data_rep = reshaped_electrode_data.transpose(1, 0, 3, 2)
-    data_slim = data_rep[:,:,:]
+    data_slim = reshaped_electrode_data.transpose(1, 0, 3, 2)
     print(f"Transposed data shape: {data_slim.shape}")
     print(f"Shape interpretation: ({data_slim.shape[0]} conditions/images, {data_slim.shape[1]} channels, {data_slim.shape[2]} trials/repeats, {data_slim.shape[3]} timepoints)")
     np.save(f'{data_dir}/data_slim', data_slim, allow_pickle=True)
@@ -207,6 +207,156 @@ plt.hist(ncsnr_all.flatten(), bins=50)
 plt.title("Distribution of NCSNR values")
 plt.xlabel("NCSNR")
 plt.ylabel("Frequency")
+plt.show()
+
+
+# In[ ]:
+
+
+n_cols = 10
+n_rows = int(np.ceil(n_ch / n_cols))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 32), sharex=True, sharey=True)
+fig.suptitle(f'NCSNR per Electrode')
+fig.supxlabel('Time (s)')
+fig.supylabel('Noise-Ceiling-Corrected SNR')
+axes = axes.flatten()
+
+for ch in range(n_ch):
+    ax = axes[ch]
+    ax.plot(time, ncsnr_all[ch], color='k', alpha=0.7)
+    ax.set_title(channel_info.iloc[ch]["channel_name"])
+    ax.tick_params(labelsize=7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+for ch in range(n_ch, len(axes)):
+    axes[ch].axis('off')
+
+ymin = np.nanmin(ncsnr_all)
+ymax = np.nanmax(ncsnr_all)
+ypad = (ymax - ymin) * 0.1
+axes[0].set_ylim(-0.1, ymax + ypad)
+
+plt.tight_layout(rect=[0.01, 0.01, 1, 0.98])
+plt.savefig(f'{output_dir}/ncsnr_per_channel')
+plt.show()
+
+
+# In[25]:
+
+
+perm_path = f"{output_dir}/ncsnr_perm"
+os.makedirs(f"{perm_path}", exist_ok=True)
+n_perms = 1024
+
+if is_interactive:
+    perm_start, perm_end = 0, 2
+else:
+    task_id    = int(sys.argv[1])
+    batch_size = int(sys.argv[2])
+    perm_start = task_id * batch_size
+    perm_end   = min(perm_start + batch_size, n_perms)
+
+for perm_id in range(perm_start, perm_end):
+    path = f"{perm_path}/perm_{perm_id:04d}.npy"
+    if os.path.exists(path):
+        print(f"Perm {perm_id}: loaded from disk")
+        continue
+
+    rng = np.random.default_rng(perm_id)
+    data_shuffled = data_slim.copy()
+    for img in range(data_slim.shape[0]):
+        perm = rng.permutation(data_slim.shape[2])
+        data_shuffled[img] = np.take(data_slim[img], perm, axis=1)
+
+    ncsnr_perm, _ = compute_ncsnr_all_timepoints(data_shuffled, time)
+    np.save(path, ncsnr_perm)
+    print(f"Perm {perm_id}: computed and saved")
+
+
+# In[33]:
+
+
+null_mean = null_ncsnr.mean(axis=0)   # (n_channels, n_timepoints)
+null_std  = null_ncsnr.std(axis=0)
+
+# Observed z-scores
+z_obs = (ncsnr_all - null_mean) / null_std  # (n_channels, n_timepoints)
+
+threshold = 1.645  # p=0.05 one-sided
+
+def find_clusters(z, threshold):
+    """Returns list of (indices, mass) for suprathreshold clusters."""
+    sig = z > threshold
+    clusters = []
+    in_cluster = False
+    for t in range(len(z)):
+        if sig[t] and not in_cluster:
+            start = t
+            in_cluster = True
+        elif not sig[t] and in_cluster:
+            idx = np.arange(start, t)
+            clusters.append((idx, z[idx].sum()))
+            in_cluster = False
+    if in_cluster:
+        idx = np.arange(start, len(z))
+        clusters.append((idx, z[idx].sum()))
+    return clusters
+
+# Null distribution of max cluster mass, per channel
+null_max_mass = np.zeros((len(null_ncsnr), n_ch))  # (n_perms, n_channels)
+for i, null_map in enumerate(null_ncsnr):
+    z_null = (null_map - null_mean) / null_std
+    for ch in range(n_ch):
+        clusters = find_clusters(z_null[ch], threshold)
+        null_max_mass[i, ch] = max((m for _, m in clusters), default=0)
+
+# Cluster p-values per channel
+cluster_results = []
+for ch in range(n_ch):
+    clusters = find_clusters(z_obs[ch], threshold)
+    ch_results = []
+    for idx, mass in clusters:
+        pval = (null_max_mass[:, ch] >= mass).mean()
+        ch_results.append((idx, mass, pval))
+    cluster_results.append(ch_results)
+
+
+# In[34]:
+
+
+n_cols = 10
+n_rows = int(np.ceil(n_ch / n_cols))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 32), sharex=True, sharey=True)
+fig.suptitle(f'NCSNR per Electrode (Cluster Permutation Test, p<0.05)')
+fig.supxlabel('Time (s)')
+fig.supylabel('Noise-Ceiling-Corrected SNR')
+axes = axes.flatten()
+
+for ch in range(n_ch):
+    ax = axes[ch]
+    ax.plot(time, ncsnr_all[ch], color='k')
+    ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
+
+    for idx, mass, pval in cluster_results[ch]:
+        if pval < 0.05:
+            ax.axvspan(time[idx[0]], time[idx[-1]], alpha=0.3, color='red')
+
+    ax.set_title(channel_info.iloc[ch]["channel_name"])
+    ax.tick_params(labelsize=7)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+for ch in range(n_ch, len(axes)):
+    axes[ch].axis('off')
+
+ymin = np.nanmin(ncsnr_all)
+ymax = np.nanmax(ncsnr_all)
+ypad = (ymax - ymin) * 0.1
+axes[0].set_ylim(ymin - ypad, ymax + ypad)
+
+plt.tight_layout(rect=[0.01, 0.01, 1, 0.98])
+plt.savefig(f'{output_dir}/significant_ncsnr')
 plt.show()
 
 
@@ -316,7 +466,7 @@ ch_timeseries = np.nanmean(reshaped_electrode_data, axis=3)
 print(ch_timeseries.shape)
 
 
-# In[43]:
+# In[17]:
 
 
 perm_path = f"{output_dir}/cluster_perm"
@@ -354,7 +504,7 @@ with ThreadPoolExecutor(max_workers=None) as executor:  # None = auto-compute nu
             print(f"Channel {ch}: computed and saving")
 
 
-# In[44]:
+# In[19]:
 
 
 n_cols = 10
@@ -374,10 +524,10 @@ for ch in range(n_ch):
     ts = ch_timeseries[ch]
     t_obs, clusters, cluster_pv, _ = results[ch]
     mean = np.nanmean(ts, axis=0)
-    sem = np.nanstd(ts, axis=0) / np.sqrt(ts.shape[0])
+    ci = 1.96 * np.nanstd(ts, axis=0) / np.sqrt(ts.shape[0])
 
     ax.plot(time, mean, color='k')
-    ax.fill_between(time, mean - sem, mean + sem, alpha=0.3, color='k')
+    ax.fill_between(time, mean - ci, mean + ci, alpha=0.3, color='k')
     ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
     for cluster_idx, pval in zip(clusters, cluster_pv):
         if pval < 0.05:
@@ -397,10 +547,4 @@ for ch in range(n_ch, len(axes)):
 plt.tight_layout(rect=[0.01, 0.01, 1, 0.98])
 plt.savefig(f'{output_dir}/significant_hfb')
 plt.show()
-
-
-# In[ ]:
-
-
-
 
