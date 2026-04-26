@@ -1,8 +1,14 @@
-import sys
+import os, sys
+import glob
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+
+import imageio.v2 as imageio
+import torch
+from torchvision import transforms
 
 
 def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
@@ -93,6 +99,8 @@ def align_channels_across_runs(all_data, all_labels, exclude_channels=['TRIG']):
                     .reset_index())
 
     return data, channel_info
+
+
 # NCSNR helper functions
 def compute_noise_ceiling(data_in):
     """
@@ -239,6 +247,7 @@ def ncsnr_figs(ncsnr_all, nc_all, times, save_path=None):
     print(f"Peak NCSNR time: {times[peak_ncsnr_time_idx]:.1f}ms")
     print(f"Peak NC time: {times[peak_nc_time_idx]:.1f}ms")
 
+
 def reshape_electrode_data_by_stimuli(electrode_data, events_df, id_column='nsd_id', stim_column='coco_id', fill_column='filename'):
     """
     Reshape electrode data from (channels, time, trials) to (channels, images, time, repeats)
@@ -266,8 +275,8 @@ def reshape_electrode_data_by_stimuli(electrode_data, events_df, id_column='nsd_
     assert not events_df_copy[id_column].isna().any(), "ID column contains NaN values! Make sure all values are filled."
     
     # Get stimulus repetition information based on NSD ID only
-    stim_counts = events_df_copy[id_column].value_counts()
-    unique_stimuli = stim_counts.index.tolist()
+    unique_stimuli = pd.unique(events_df_copy[id_column]).tolist()
+    stim_counts = events_df_copy[id_column].value_counts().reindex(unique_stimuli)
     n_unique_images = len(unique_stimuli)
     assert n_unique_images == len(pd.unique(events_df['filename']))
     max_repeats = stim_counts.max()
@@ -313,44 +322,84 @@ def reshape_electrode_data_by_stimuli(electrode_data, events_df, id_column='nsd_
     return reshaped_data, stimulus_info
 
 
-def extract_images_with_n_repeats(reshaped_data, stim_info, n_repeats=6):
-    """
-    Extract data for images that have exactly n_repeats repetitions.
+# def extract_images_with_n_repeats(reshaped_data, stim_info, n_repeats=6):
+#     """
+#     Extract data for images that have exactly n_repeats repetitions.
     
-    Parameters:
-        reshaped_data: array of shape (channels, n_unique_images, time, max_repeats)
-        stim_info: dict with stimulus mapping information from reshape_electrode_data_by_stimuli
-        n_repeats: number of repeats to filter for (default=6)
+#     Parameters:
+#         reshaped_data: array of shape (channels, n_unique_images, time, max_repeats)
+#         stim_info: dict with stimulus mapping information from reshape_electrode_data_by_stimuli
+#         n_repeats: number of repeats to filter for (default=6)
     
-    Returns:
-        filtered_data: array of shape (channels, n_filtered_images, time, n_repeats)
-        filtered_stimuli: list of stimulus IDs that have exactly n_repeats
-        filtered_indices: list of original indices in reshaped_data
-    """
+#     Returns:
+#         filtered_data: array of shape (channels, n_filtered_images, time, n_repeats)
+#         filtered_stimuli: list of stimulus IDs that have exactly n_repeats
+#         filtered_indices: list of original indices in reshaped_data
+#     """
     
-    # Find stimuli with exactly n_repeats
-    filtered_stimuli = []
-    filtered_indices = []
+#     # Find stimuli with exactly n_repeats
+#     filtered_stimuli = []
+#     filtered_indices = []
     
-    for i, stimulus in enumerate(stim_info['unique_stimuli']):
-        if stim_info['stimulus_counts'][stimulus] == n_repeats:
-            filtered_stimuli.append(stimulus)
-            filtered_indices.append(i)
+#     for i, stimulus in enumerate(stim_info['unique_stimuli']):
+#         if stim_info['stimulus_counts'][stimulus] == n_repeats:
+#             filtered_stimuli.append(stimulus)
+#             filtered_indices.append(i)
     
-    print(f"Found {len(filtered_stimuli)} images with exactly {n_repeats} repeats")
+#     print(f"Found {len(filtered_stimuli)} images with exactly {n_repeats} repeats")
     
-    if len(filtered_stimuli) == 0:
-        print(f"No images found with exactly {n_repeats} repeats")
-        return None, [], []
+#     if len(filtered_stimuli) == 0:
+#         print(f"No images found with exactly {n_repeats} repeats")
+#         return None, [], []
     
-    # Extract data for these images
-    n_channels, _, n_timepoints, _ = reshaped_data.shape
-    filtered_data = np.zeros((n_channels, len(filtered_stimuli), n_timepoints, n_repeats))
+#     # Extract data for these images
+#     n_channels, _, n_timepoints, _ = reshaped_data.shape
+#     filtered_data = np.zeros((n_channels, len(filtered_stimuli), n_timepoints, n_repeats))
     
-    for new_idx, orig_idx in enumerate(filtered_indices):
-        filtered_data[:, new_idx, :, :] = reshaped_data[:, orig_idx, :, :n_repeats]
+#     for new_idx, orig_idx in enumerate(filtered_indices):
+#         filtered_data[:, new_idx, :, :] = reshaped_data[:, orig_idx, :, :n_repeats]
     
-    print(f"Extracted data shape: {filtered_data.shape}")
-    print(f"Shape interpretation: ({n_channels} channels, {len(filtered_stimuli)} images, {n_timepoints} timepoints, {n_repeats} repeats)")
+#     print(f"Extracted data shape: {filtered_data.shape}")
+#     print(f"Shape interpretation: ({n_channels} channels, {len(filtered_stimuli)} images, {n_timepoints} timepoints, {n_repeats} repeats)")
     
-    return filtered_data, filtered_stimuli, filtered_indices
+#     return filtered_data, filtered_stimuli, filtered_indices
+
+
+def load_images(unique_image_names, img_dir, save_path=None, imsize=(224,224), data_type=torch.float32):
+    resize_transform = transforms.Resize(imsize)
+    
+    images = torch.empty((len(unique_image_names), 3, imsize[0], imsize[1]), dtype=data_type)
+    
+    # load images
+    for i, im_name in tqdm(enumerate(unique_image_names), total=len(unique_image_names)):
+        default_path = f"{img_dir}/stimulusfiles/{im_name}"
+        if not os.path.exists(default_path):  # non-default case; image isn't in stimulusfiles
+            candidates = glob.glob(f"{img_dir}/**/{im_name}", recursive=True)
+        
+            if len(candidates) == 0:
+                raise FileNotFoundError(f"No matching files found for {im_name} under {img_dir}")
+        
+            imgs = [imageio.imread(path) for path in candidates]
+        
+            # check for identical matches
+            if len(imgs) > 1:
+                for j in range(1, len(imgs)):
+                    if not np.array_equal(imgs[0], imgs[j]):
+                        raise ValueError(f"Non-identical duplicates found for {im_name}:\n{candidates}")
+        
+            im = imgs[0]
+        else:  # default case; image in stimulusfiles
+            im = imageio.imread(default_path)
+    
+        if im.ndim == 2:
+            raise ValueError(f"only 2 dims in image {im_name}")
+        elif im.shape[2] == 4:
+            im = im[:, :, :3]
+        im = torch.tensor(im, dtype=data_type).permute(2,0,1)
+        im = resize_transform(im)
+        images[i] = im
+
+    if save_path is not None:
+        torch.save(images, save_path)
+
+    return images
