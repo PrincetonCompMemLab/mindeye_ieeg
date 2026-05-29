@@ -15,3 +15,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated analysis artifacts (regenerable from code + data)
+outputs/
+
+# Agent home dir (Claude config, memory, transcripts)
+home/
+
+# Large vendored / third-party code
+scripts/mindeye_offline/
+scripts/PSN/
