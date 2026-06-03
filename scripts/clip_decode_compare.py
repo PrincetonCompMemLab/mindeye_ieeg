@@ -31,16 +31,25 @@ from ieeg_preproc.transformers import (
 )
 from template_matching_compare import DERIV, MODES, load_modalities
 
-EMB_PATH = DERIV / "images_clipemb"
+EMB_PATHS = {"pooled": DERIV / "images_clipemb",        # (2900, 1024)
+             "bigG": DERIV / "images_clipemb_bigG"}     # (2900, 256, 1664) token-level
 OUTPUT_DIR = Path("outputs/clip")
 
 
-def load_embeddings(max_images=None):
-    """Load the 1024-d pooled CLIP embeddings (unique-image order)."""
-    y = torch.load(EMB_PATH, weights_only=True).numpy().astype(np.float64)
+def load_embeddings(target="pooled", max_images=None):
+    """Load CLIP image embeddings in unique-image order.
+
+    ``pooled`` -> the 1024-d pooled embedding; ``bigG`` -> token-level embeddings
+    ``(images, tokens, dim)`` flattened to ``(images, tokens*dim)`` (decode this in a
+    PCA-reduced space via ``CLIPDecodingEval(target_pca=...)``).
+    """
+    y = torch.load(EMB_PATHS[target], weights_only=True).numpy()
+    if y.ndim > 2:
+        y = y.reshape(y.shape[0], -1)              # flatten token x dim -> features
+    y = y.astype(np.float32)
     if max_images is not None:
         y = y[:max_images]
-    print(f"[load] images_clipemb y={y.shape}")
+    print(f"[load] {EMB_PATHS[target].name} y={y.shape} ({y.dtype})")
     return y
 
 
@@ -66,7 +75,9 @@ def plot_comparison(results, top_ks, out_path):
     ax.set_xscale("log")
     ax.set_xlabel("K")
     ax.set_ylabel("Top-K CLIP retrieval accuracy (held-out test)")
-    ax.set_title("CLIP-embedding decoding: voltage vs HFB")
+    tpc = next(iter(results.values())).get("target_pca_components")
+    tgt = f" (target PCA={tpc})" if tpc else ""
+    ax.set_title(f"CLIP-embedding decoding: voltage vs HFB{tgt}")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -84,22 +95,28 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-images", type=int, default=None,
                    help="subset to the first N images (lighter smoke run; separate cache).")
+    p.add_argument("--target", choices=tuple(EMB_PATHS), default="pooled",
+                   help="CLIP target: 1024-d pooled, or token-level bigG (needs --target-pca).")
+    p.add_argument("--target-pca", type=int, default=None,
+                   help="reduce the target to this many PCs (fit on train); required for bigG.")
     args = p.parse_args()
 
     top_ks = (1, 2, 5, 10, 20, 50, 100)
     datasets, ncsnr_by_name = load_modalities(args.window, args.stride, args.max_images)
     if not datasets:
         raise SystemExit("no modalities with a raw reshaped array found.")
-    y = load_embeddings(args.max_images)
+    y = load_embeddings(args.target, args.max_images)
     # Guard order alignment against every dataset's conditions axis before modeling.
     for name, (_, stim_info) in datasets.items():
         assert_aligned(stim_info, stim_info["n_unique_images"], y=y)
 
     make_pipeline = make_pipeline_factory(args.window, args.stride, args.top_k, ncsnr_by_name)
-    ev = CLIPDecodingEval(top_ks=top_ks, test_size=args.test_size, seed=args.seed)
+    ev = CLIPDecodingEval(top_ks=top_ks, test_size=args.test_size,
+                          target_pca=args.target_pca, seed=args.seed)
     results = run_comparison(datasets, make_pipeline, ev, y=y, seed=args.seed)
 
-    plot_comparison(results, top_ks, OUTPUT_DIR / "clip_decode_voltage_vs_hfb.png")
+    plot_comparison(results, top_ks,
+                    OUTPUT_DIR / f"clip_decode_{args.target}_voltage_vs_hfb.png")
 
 
 if __name__ == "__main__":
