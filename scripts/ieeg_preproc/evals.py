@@ -233,14 +233,15 @@ class CLIPDecodingEval(Evaluation):
     """
 
     def __init__(self, top_ks=(1, 5, 20, 100), test_size=0.2, zscore=True, do_pca=True,
-                 n_pcs=None, pca_var_threshold=0.98, ridge_alphas=None, seed=42,
-                 verbose=True):
+                 n_pcs=None, pca_var_threshold=0.98, target_pca=None, ridge_alphas=None,
+                 seed=42, verbose=True):
         self.top_ks = tuple(top_ks)
         self.test_size = test_size
         self.zscore = zscore
         self.do_pca = do_pca
         self.n_pcs = n_pcs
         self.pca_var_threshold = pca_var_threshold
+        self.target_pca = target_pca
         self.ridge_alphas = (np.logspace(-4, 10, 80) if ridge_alphas is None
                              else np.asarray(ridge_alphas))
         self.seed = seed
@@ -265,23 +266,43 @@ class CLIPDecodingEval(Evaluation):
                             self.pca_var_threshold).fit(X[train])
         X_tr, X_te = prep.transform(X[train]), prep.transform(X[test])
 
-        ridge = RidgeCV(alphas=self.ridge_alphas, alpha_per_target=True)
-        ridge.fit(X_tr, y[train])
+        # Optionally reduce the (possibly huge, e.g. bigG token-level) target with a PCA
+        # fit on the train embeddings only; decode and retrieve in that reduced space.
+        y_prep = self._fit_target_prep(y[train])
+        y_tr, y_te = y_prep.transform(y[train]), y_prep.transform(y[test])
 
+        ridge = RidgeCV(alphas=self.ridge_alphas, alpha_per_target=True)
+        ridge.fit(X_tr, y_tr)
+
+        n_components = None if y_prep.pca_ is None else int(y_prep.pca_.n_components_)
         res = {"n_train": int(len(train)), "n_test": int(len(test)),
                "chance": {k: k / len(test) for k in self.top_ks},
-               "test_r2": float(ridge.score(X_te, y[test]))}
+               "test_r2": float(ridge.score(X_te, y_te)),
+               "target_pca_components": n_components}
         res["top_k_retrieval_train"] = topk_from_similarity(
-            cosine_matrix(ridge.predict(X_tr), y[train]), self.top_ks)
+            cosine_matrix(ridge.predict(X_tr), y_tr), self.top_ks)
         res["top_k_retrieval_test"] = topk_from_similarity(
-            cosine_matrix(ridge.predict(X_te), y[test]), self.top_ks)
+            cosine_matrix(ridge.predict(X_te), y_te), self.top_ks)
 
         if self.verbose:
             self._print(res)
         return res
 
+    def _fit_target_prep(self, y_train):
+        """Target-side PCA fit on train embeddings: ``None`` -> identity (no reduction);
+        ``int`` -> that many components; ``float in (0, 1]`` -> retained-variance threshold."""
+        if self.target_pca is None:
+            return _FeaturePrep(zscore=False, do_pca=False).fit(y_train)
+        if isinstance(self.target_pca, float) and 0.0 < self.target_pca <= 1.0:
+            return _FeaturePrep(zscore=False, do_pca=True, n_pcs=None,
+                                pca_var_threshold=self.target_pca).fit(y_train)
+        return _FeaturePrep(zscore=False, do_pca=True,
+                            n_pcs=int(self.target_pca)).fit(y_train)
+
     def _print(self, res):
-        print(f"\nclip decoding: n_train={res['n_train']} n_test={res['n_test']} "
+        tgt = (f" target_pca={res['target_pca_components']}"
+               if res["target_pca_components"] is not None else "")
+        print(f"\nclip decoding: n_train={res['n_train']} n_test={res['n_test']}{tgt} "
               f"(test R^2={res['test_r2']:.4f})")
         print(f"  {'K':>4} {'chance':>8} {'retr(tr)':>9} {'retr(te)':>9}")
         for k in self.top_ks:

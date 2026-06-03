@@ -55,6 +55,32 @@ def test_noise_decoding_near_chance(decoding_noise_dataset):
     assert res["top_k_retrieval_test"][1] < 0.2
 
 
+def test_target_pca_reduces_and_decodes(decoding_dataset):
+    # A high-dim target reduced via target_pca should still decode above chance, and
+    # retrieval happens in the reduced space (the path used for bigG token embeddings).
+    X, y = decoding_dataset
+    ev = CLIPDecodingEval(top_ks=(1, 5), test_size=0.25, target_pca=8, seed=1,
+                          verbose=False)
+    res = ev.run(X, y=y)
+    assert "target_pca_components" in res and res["target_pca_components"] == 8
+    assert res["top_k_retrieval_test"][1] > 5 * res["chance"][1]
+
+
+def test_target_pca_variance_threshold(decoding_dataset):
+    # A float target_pca is treated as a retained-variance threshold.
+    X, y = decoding_dataset
+    ev = CLIPDecodingEval(top_ks=(1,), test_size=0.25, target_pca=0.9, seed=1,
+                          verbose=False)
+    res = ev.run(X, y=y)
+    assert 1 <= res["target_pca_components"] <= y.shape[1]
+
+
+def test_no_target_pca_by_default(decoding_dataset):
+    X, y = decoding_dataset
+    res = CLIPDecodingEval(top_ks=(1,), seed=1, verbose=False).run(X, y=y)
+    assert res["target_pca_components"] is None
+
+
 def test_drops_nan_feature_columns(decoding_dataset):
     X, y = decoding_dataset
     X = X.copy()
