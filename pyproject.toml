@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "accelerate>=1.10.1",
+    "braceexpand>=0.1.7",
     "clip @ git+https://github.com/openai/CLIP.git",
+    "dalle2-pytorch>=1.15.6",
+    "deepspeed>=0.19.1",
     "diffusers>=0.35.1",
     "imageio==2.34.0",
     "jupyter>=1.1.1",
@@ -21,11 +24,14 @@ dependencies = [
     "pytest>=9.0.3",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
+    "setuptools<81",
     "statsmodels>=0.14.6",
     "torch==2.4.1",
+    "torchmetrics>=1.9.0",
     "torchvision==0.19.1",
     "tqdm>=4.67.1",
     "transformers>=4.57.0",
+    "webdataset>=1.0.2",
 ]
 
 [tool.uv.sources]
