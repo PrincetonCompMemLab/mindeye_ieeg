@@ -31,6 +31,7 @@ dependencies = [
     "torchvision==0.19.1",
     "tqdm>=4.67.1",
     "transformers>=4.57.0",
+    "wandb>=0.27.2",
     "webdataset>=1.0.2",
 ]
 

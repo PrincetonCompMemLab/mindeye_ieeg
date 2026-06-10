@@ -99,7 +99,13 @@ def main():
     p.add_argument("--no-pretrained", action="store_true",
                    help="skip loading the pretrained backbone (from-scratch ablation).")
     p.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    p.add_argument("--out-dir", type=Path, default=OUT_DIR,
+                   help="where to write best ckpt / history.json / plot (per-run dir avoids clobber).")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--wandb", action="store_true",
+                   help="log config + per-epoch metrics to Weights & Biases (off by default).")
+    p.add_argument("--wandb-project", default="mindeye_ieeg")
+    p.add_argument("--wandb-name", default=None, help="optional run name (defaults to wandb auto).")
     args = p.parse_args()
 
     device = torch.device(args.device)
@@ -165,10 +171,25 @@ def main():
         else (lambda: torch.autocast(device_type="cpu", enabled=False))
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    run = None
+    if args.wandb:
+        import wandb
+        run = wandb.init(project=args.wandb_project, name=args.wandb_name, config={
+            "num_epochs": args.num_epochs, "batch_size": args.batch_size,
+            "max_lr": args.max_lr, "mixup_pct": args.mixup_pct, "seed": args.seed,
+            "pretrained": not args.no_pretrained, "feature_dim": F,
+            "hidden_dim": HIDDEN_DIM, "n_blocks": N_BLOCKS, "clip_emb_dim": CLIP_EMB_DIM,
+            "clip_seq_dim": CLIP_SEQ_DIM, "clip_scale": CLIP_SCALE,
+            "n_train": len(train_ds), "n_test": len(test_ds), "device": str(device),
+        })
+        print(f"[wandb] logging to project={args.wandb_project!r} run={run.name}")
+
     history = {"epoch": [], "loss": [], "lr": [], "train_top1": [], "test_top1": [],
                "test_fwd": [], "test_bwd": []}
-    best_test_top1, best_path = -1.0, OUT_DIR / "mindeye_ieeg_best.pt"
+    best_test_top1, best_path = -1.0, out_dir / "mindeye_ieeg_best.pt"
 
     for epoch in range(args.num_epochs):
         model.train()
@@ -215,6 +236,12 @@ def main():
         history["test_top1"].append(te_fwd[1]); history["test_fwd"].append(te_fwd)
         history["test_bwd"].append(te_bwd)
 
+        if run is not None:
+            run.log({"epoch": epoch, "loss": epoch_loss, "lr": lr_now, "mode": mode,
+                     "train/top1": tr_fwd[1], "test/top1": te_fwd[1],
+                     **{f"test/fwd_top{k}": te_fwd[k] for k in TOP_KS},
+                     **{f"test/bwd_top{k}": te_bwd[k] for k in TOP_KS}}, step=epoch)
+
         if te_fwd[1] >= best_test_top1:
             best_test_top1 = te_fwd[1]
             torch.save({"model_state_dict": model.state_dict(), "epoch": epoch,
@@ -227,7 +254,7 @@ def main():
     print_table("test", te_fwd, te_bwd, len(test_ds), TOP_KS)
     print(f"best test top-1 over training: {best_test_top1:.2%} -> {best_path}")
 
-    with open(OUT_DIR / "history.json", "w") as f:
+    with open(out_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
@@ -236,8 +263,14 @@ def main():
     ax.set_xscale("log"); ax.set_xlabel("K"); ax.set_ylabel("Top-K CLIP retrieval (held-out test)")
     ax.set_title(f"MindEye2 iEEG->bigG retrieval (pretrained={not args.no_pretrained})")
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3); fig.tight_layout()
-    fig.savefig(OUT_DIR / "mindeye_ieeg_retrieval.png", dpi=120)
-    print(f"saved {OUT_DIR}/history.json and mindeye_ieeg_retrieval.png")
+    fig.savefig(out_dir / "mindeye_ieeg_retrieval.png", dpi=120)
+    print(f"saved {out_dir}/history.json and mindeye_ieeg_retrieval.png")
+
+    if run is not None:
+        import wandb
+        run.summary["best_test_top1"] = best_test_top1
+        run.log({"retrieval_curve": wandb.Image(fig)})
+        run.finish()
 
 
 if __name__ == "__main__":
