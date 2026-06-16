@@ -1,0 +1,10 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        git curl ca-certificates ripgrep vim less nodejs npm
+    npm install -g @anthropic-ai/claude-code
+    pip install --no-cache-dir uv
+    rm -rf /var/lib/apt/lists/*
