@@ -13,6 +13,7 @@ Run:
 """
 
 import argparse
+import warnings
 
 import numpy as np
 import torch
@@ -24,6 +25,40 @@ from clip_decode_compare import make_pipeline_factory
 
 BIGG_PATH = DERIV / "images_clipemb_bigG"   # (2900, 256, 1664) fp16, unique-image order
 OUT_DIR = DERIV / "mindeye"
+OUT_DIR_ST = DERIV / "mindeye_single_trial"  # Tier-1 single-trial variant
+
+
+def averaged_and_keepmask(X3d):
+    """From rep-resolved ``(conditions, features, reps)`` -> ``(X_avg, keep)``.
+
+    ``X_avg`` is the rep-averaged matrix (``np.nanmean`` over reps, == the ``average_reps=True``
+    output). ``keep`` is the feature-column mask dropping channels NaN for any image -- the
+    *same* rule as the averaged path / ``CLIPDecodingEval`` -- so single-trial train and
+    averaged test end up with identical columns.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN repetition slices
+        X_avg = np.nanmean(X3d, axis=2)
+    keep = ~np.isnan(X_avg).any(axis=0)
+    return X_avg, keep
+
+
+def expand_train_trials(X3d, image_ids, keep):
+    """Expand the given images' valid repetitions to one ``(x_trial, image)`` row each.
+
+    Padded repetitions (all-NaN slices for under-sampled images) are dropped; only the
+    ``image_ids`` requested contribute (so passing the train split cannot leak test trials).
+    Returns ``(X_trials (n, n_keep) float32, image_idx (n,) int64)``.
+    """
+    rows, imgs = [], []
+    for c in image_ids:
+        feats = X3d[c][keep, :]                 # (n_keep, reps)
+        for r in range(feats.shape[1]):
+            v = feats[:, r]
+            if not np.isnan(v).any():           # skip padded / partial repetitions
+                rows.append(v)
+                imgs.append(int(c))
+    return np.stack(rows).astype(np.float32), np.asarray(imgs, dtype=np.int64)
 
 
 def main():

@@ -76,15 +76,29 @@ class TemporalSmoother(TransformerStep):
         self.window = window
         self.stride = stride
 
+    # Target footprint for one condition-block's smoothing intermediates. Smoothing
+    # couples only the time axis, so conditions are independent and can be processed in
+    # blocks; on full-resolution data the cumulative-sum intermediates are several times
+    # the array size, so smoothing the whole thing at once OOMs.
+    _BLOCK_BYTES = 8 * 1024 ** 3
+
     def transform(self, X, stim_info=None):
         _check_4d(X)
+        sl = slice(None, None, self.stride)        # stride==1 -> full copy
         if self.window == 1:
-            smoothed = X
-        else:
-            smoothed = self._moving_average(X)
-        if self.stride > 1:
-            return smoothed[:, :, ::self.stride, :].copy()
-        return smoothed.copy()
+            return X[:, :, sl, :].copy()
+        C, K, T, R = X.shape
+        # ~a handful of (C, block, T, R) intermediates live at the smoother's peak;
+        # size each block so that footprint stays under the budget.
+        per_cond = max(C * T * R * 8 * 8, 1)
+        block = max(1, min(K, int(self._BLOCK_BYTES // per_cond)))
+        out = None
+        for s in range(0, K, block):
+            sm = self._moving_average(X[:, s:s + block])[:, :, sl, :]
+            if out is None:
+                out = np.empty((C, K) + sm.shape[2:], dtype=sm.dtype)
+            out[:, s:s + block] = sm
+        return out
 
     def _moving_average(self, X):
         """NaN-aware centered moving average over the time axis via cumulative sums.

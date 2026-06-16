@@ -53,13 +53,13 @@ def load_embeddings(target="pooled", max_images=None):
     return y
 
 
-def make_pipeline_factory(window, stride, top_k, ncsnr_by_name):
+def make_pipeline_factory(window, stride, top_k, ncsnr_by_name, average_reps=True):
     def make_pipeline(name):
         return IEEGPreprocessingPipeline([
             ("featurization", DomainFeaturizer(mode=MODES[name])),
             ("smoothing", TemporalSmoother(window, stride)),
             ("selection", NCSNRSelector(ncsnr=ncsnr_by_name[name], top_k=top_k)),
-            ("formatter", FinalFormatter(average_reps=True)),
+            ("formatter", FinalFormatter(average_reps=average_reps)),
         ])
     return make_pipeline
 
